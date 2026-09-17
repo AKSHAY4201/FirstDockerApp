@@ -1,0 +1,96 @@
+name: 'Build and Deploy to Cloud Run'
+
+on:
+  push:
+    branches:
+      - 'master'
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: 'project-2180eaba-bae4-4a4b-856'
+  REGION: 'asia-south1'
+  SERVICE: 'hello-world-service'
+  IMAGE_NAME: 'firstdockerapp'
+  REPOSITORY: 'hello-world-service'
+  WORKLOAD_IDENTITY_PROVIDER: '${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}'
+  SERVICE_ACCOUNT_EMAIL: '${{ secrets.SERVICE_ACCOUNT_EMAIL }}'
+
+jobs:
+  deploy:
+    runs-on: 'ubuntu-latest'
+
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+
+      # 1. Checkout source code
+      - name: 'Checkout'
+        uses: 'actions/checkout@v4'
+
+      # 2. Authenticate to Google Cloud using Workload Identity Federation
+      - id: 'auth'
+        name: 'Authenticate to Google Cloud'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          workload_identity_provider: '${{ env.WORKLOAD_IDENTITY_PROVIDER }}'
+          service_account: '${{ env.SERVICE_ACCOUNT_EMAIL }}'
+          project_id: '${{ env.PROJECT_ID }}'
+          token_format: 'access_token'
+
+      # 3. Verify which Google account and project are being used
+      - name: 'Check Google Identity'
+        run: |
+          echo "========================================"
+          echo "Active Google account:"
+          echo "========================================"
+          gcloud auth list
+
+          echo ""
+          echo "========================================"
+          echo "Google project:"
+          echo "========================================"
+          gcloud config get-value project
+
+      # 4. Authenticate Docker with Artifact Registry
+      - name: 'Docker Auth'
+        uses: 'docker/login-action@v3'
+        with:
+          username: 'oauth2accesstoken'
+          password: '${{ steps.auth.outputs.access_token }}'
+          registry: '${{ env.REGION }}-docker.pkg.dev'
+
+      # 5. Build Docker image and push it to Artifact Registry
+      - name: 'Build and Push Container'
+        run: |
+          DOCKER_TAG="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+
+          echo "Docker image:"
+          echo "${DOCKER_TAG}"
+
+          echo ""
+          echo "Building Docker image..."
+          docker build --tag "${DOCKER_TAG}" .
+
+          echo ""
+          echo "Pushing Docker image to Artifact Registry..."
+          docker push "${DOCKER_TAG}"
+
+      # 6. Deploy the pushed image to Cloud Run
+      - name: 'Deploy to Cloud Run'
+        id: 'deploy'
+        uses: 'google-github-actions/deploy-cloudrun@v2'
+        with:
+          service: '${{ env.SERVICE }}'
+          region: '${{ env.REGION }}'
+          image: '${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}'
+
+      # 7. Show Cloud Run URL
+      - name: 'Show output'
+        run: |
+          echo "========================================"
+          echo "Cloud Run deployment successful"
+          echo "========================================"
+          echo "Service URL:"
+          echo "${{ steps.deploy.outputs.url }}"
